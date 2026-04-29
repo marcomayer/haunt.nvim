@@ -29,6 +29,7 @@
 ---@field yank_locations fun(opts?: SidekickOpts): boolean
 ---@field cleanup_buffer_tracking fun(bufnr: number)
 ---@field change_data_dir fun(new_dir: string|nil): boolean
+---@field reload fun(): boolean
 ---@field _reset_for_testing fun()
 
 ---@private
@@ -863,6 +864,47 @@ function M.cleanup_buffer_tracking(bufnr)
 	restoration.cleanup_buffer_tracking(bufnr)
 end
 
+--- Refresh in-memory state from on-disk storage.
+---
+--- Clears extmarks and signs from all loaded buffers, resets restoration
+--- tracking, reloads the store from disk, then restores visuals on all
+--- loaded buffers. The on-disk state is treated as the source of truth —
+--- this does NOT call store.save() first.
+---
+--- Used after the storage file has been changed externally (data dir
+--- swap, migration, etc.).
+---
+---@return boolean success Always true once invoked
+function M.reload()
+	ensure_modules()
+	---@cast store -nil
+	---@cast display -nil
+	---@cast restoration -nil
+
+	-- Clear visuals from all loaded buffers
+	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_loaded(bufnr) and vim.api.nvim_buf_is_valid(bufnr) then
+			display.clear_buffer_marks(bufnr)
+			display.clear_buffer_signs(bufnr)
+		end
+	end
+
+	-- Reset restoration tracking so buffers can be re-restored
+	restoration.reset_tracking()
+
+	-- Reset store and reload from new location
+	store.reload()
+
+	-- Restore visuals for all loaded buffers
+	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+		if vim.api.nvim_buf_is_loaded(bufnr) and vim.api.nvim_buf_is_valid(bufnr) then
+			restoration.restore_buffer_bookmarks(bufnr, _annotations_visible)
+		end
+	end
+
+	return true
+end
+
 --- Change the data directory and reload all bookmarks.
 ---
 --- Saves current bookmarks to the old data_dir, clears all visual elements,
@@ -882,37 +924,11 @@ end
 function M.change_data_dir(new_dir)
 	ensure_modules()
 	---@cast store -nil
-	---@cast display -nil
 	---@cast persistence -nil
-	---@cast restoration -nil
 
 	store.save()
-
-	-- Clear visuals from all loaded buffers
-	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-		if vim.api.nvim_buf_is_loaded(bufnr) and vim.api.nvim_buf_is_valid(bufnr) then
-			display.clear_buffer_marks(bufnr)
-			display.clear_buffer_signs(bufnr)
-		end
-	end
-
-	-- Clear restoration tracking so buffers can be re-restored
-	restoration.reset_tracking()
-
-	-- Set new data_dir in persistence
 	persistence.set_data_dir(new_dir)
-
-	-- Reset store and reload from new location
-	store.reload()
-
-	-- Restore visuals for all loaded buffers
-	for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-		if vim.api.nvim_buf_is_loaded(bufnr) and vim.api.nvim_buf_is_valid(bufnr) then
-			restoration.restore_buffer_bookmarks(bufnr, _annotations_visible)
-		end
-	end
-
-	return true
+	return M.reload()
 end
 
 --- Reset internal state for testing purposes only
