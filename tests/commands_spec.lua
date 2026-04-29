@@ -292,8 +292,8 @@ describe("haunt user commands", function()
 	end)
 
 	describe("HauntMigrate", function()
+		local project_mock = require("tests.helpers.project_mock")
 		local original_notify
-		local original_get_root
 		local notify_calls
 
 		before_each(function()
@@ -303,18 +303,13 @@ describe("haunt user commands", function()
 				table.insert(notify_calls, { msg = msg, level = level })
 			end
 
-			-- Stub project.get_root to simulate "not in a git repo"
-			local project = require("haunt.project")
-			original_get_root = project.get_root
-			project.get_root = function()
-				return nil
-			end
+			-- Inject "not in a git repo" project info.
+			project_mock.set({ root = nil, branch = nil, project_id = vim.fn.getcwd() })
 		end)
 
 		after_each(function()
 			vim.notify = original_notify
-			local project = require("haunt.project")
-			project.get_root = original_get_root
+			project_mock.restore()
 		end)
 
 		it("is registered as a user command", function()

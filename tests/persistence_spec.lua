@@ -127,11 +127,10 @@ describe("haunt.persistence", function()
 		end)
 
 		describe("project_id keying", function()
-			local project_mock
+			local project_mock = require("tests.helpers.project_mock")
 			local config
 
 			before_each(function()
-				project_mock = require("tests.helpers.project_mock")
 				config = require("haunt.config")
 			end)
 
@@ -374,8 +373,8 @@ describe("haunt.persistence", function()
 		end
 
 		before_each(function()
-			-- Inject a stable project root so v2 save+load round-trips resolve to the
-			-- same project regardless of where the test runs.
+			-- Inject a stable project root so v2 save+load round-trips resolve
+			-- consistently regardless of where the test runs.
 			project_mock.set({ root = "/tmp", branch = "main", project_id = "tmp" })
 
 			local test_dir = vim.fn.stdpath("data") .. "/haunt/test/"

@@ -232,10 +232,13 @@ describe("haunt.migration", function()
 		assert.are.equal(1, #new_data.bookmarks)
 		assert.are.equal("preexisting", new_data.bookmarks[1].id)
 
-		-- Saw the refusal notify.
-		local refusal = find_notification("refusing to overwrite")
+		-- Saw the refusal notify with the new actionable wording.
+		local refusal = find_notification("cannot migrate")
 		assert.is_not_nil(refusal)
 		assert.are.equal(vim.log.levels.ERROR, refusal.level)
+		-- Both paths must appear in the message so the user can act.
+		assert.is_not_nil(refusal.msg:find(old_path, 1, true))
+		assert.is_not_nil(refusal.msg:find(new_path, 1, true))
 
 		-- We aborted before announcing migration — the start notify must
 		-- NOT have fired (otherwise users see a misleading "starting
@@ -379,14 +382,14 @@ describe("haunt.migration", function()
 		assert.is_not_nil(success.msg:find("1 bookmarks", 1, true))
 	end)
 
-	describe("notify_if_pending_v1", function()
+	describe("auto_migrate", function()
 		before_each(function()
-			-- Each notify_if_pending_v1 test starts with a clean session
-			-- table so the once-per-session guard doesn't leak state.
+			-- Each auto_migrate test starts with a clean session table so
+			-- the dual-state once-per-session guard doesn't leak state.
 			migration._reset_for_testing()
 		end)
 
-		it("returns true and notifies once when v1 file exists at old path", function()
+		it("calls migrate_current_project when only v1 exists", function()
 			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
 			local new_path = persistence.get_storage_path()
 
@@ -399,55 +402,19 @@ describe("haunt.migration", function()
 				},
 			})
 
-			local pending = migration.notify_if_pending_v1()
-			assert.is_true(pending)
+			migration.auto_migrate()
 
-			local n = find_notification("v1 bookmark storage detected")
-			assert.is_not_nil(n)
-			assert.are.equal(vim.log.levels.WARN, n.level)
-			assert.is_not_nil(n.msg:find(old_path, 1, true))
-			assert.is_not_nil(n.msg:find(":HauntMigrate", 1, true))
+			-- Migration ran: v2 file written, v1 backed up.
+			assert.are.equal(1, vim.fn.filereadable(new_path))
+			assert.are.equal(0, vim.fn.filereadable(old_path))
+			assert.are.equal(1, vim.fn.filereadable(old_path .. ".v1.bak"))
+
+			-- Saw the start and success notifies from migrate_current_project.
+			assert.is_not_nil(find_notification("starting migration"))
+			assert.is_not_nil(find_notification("migration successful"))
 		end)
 
-		it("does not re-notify on a second call in the same session", function()
-			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
-			write_json(old_path, {
-				version = 1,
-				bookmarks = {
-					{ file = "/fake/proj/src/main.lua", line = 10, id = "id1" },
-				},
-			})
-
-			-- First call: notifies.
-			assert.is_true(migration.notify_if_pending_v1())
-			assert.is_not_nil(find_notification("v1 bookmark storage detected"))
-
-			-- Clear capture; second call should still report pending=true
-			-- but emit no new notify.
-			notifications = {}
-			assert.is_true(migration.notify_if_pending_v1())
-			assert.is_nil(find_notification("v1 bookmark storage detected"))
-		end)
-
-		it("re-notifies after _reset_for_testing", function()
-			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
-			write_json(old_path, {
-				version = 1,
-				bookmarks = {
-					{ file = "/fake/proj/src/main.lua", line = 10, id = "id1" },
-				},
-			})
-
-			migration.notify_if_pending_v1()
-			notifications = {}
-			-- Without reset, this would be a no-op notify.
-			migration._reset_for_testing()
-
-			assert.is_true(migration.notify_if_pending_v1())
-			assert.is_not_nil(find_notification("v1 bookmark storage detected"))
-		end)
-
-		it("returns false when a v2 file already exists at the new path", function()
+		it("emits ERROR with both paths when v1 and v2 both exist", function()
 			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
 			local new_path = persistence.get_storage_path()
 
@@ -464,47 +431,90 @@ describe("haunt.migration", function()
 				},
 			})
 
-			assert.is_false(migration.notify_if_pending_v1())
-			assert.is_nil(find_notification("v1 bookmark storage detected"))
+			migration.auto_migrate()
+
+			-- Migration did NOT run: v1 untouched, no backup, v2 unchanged.
+			assert.are.equal(1, vim.fn.filereadable(old_path))
+			assert.are.equal(0, vim.fn.filereadable(old_path .. ".v1.bak"))
+			local v2_data = read_json(new_path)
+			assert.are.equal(1, #v2_data.bookmarks)
+			assert.are.equal("v2id", v2_data.bookmarks[1].id)
+
+			local refusal = find_notification("cannot migrate")
+			assert.is_not_nil(refusal)
+			assert.are.equal(vim.log.levels.ERROR, refusal.level)
+			assert.is_not_nil(refusal.msg:find(old_path, 1, true))
+			assert.is_not_nil(refusal.msg:find(new_path, 1, true))
+
+			-- migrate_current_project's start notify must NOT have fired.
+			assert.is_nil(find_notification("starting migration"))
 		end)
 
-		it("returns false when no v1 file exists at the old path", function()
-			-- Don't seed any old file.
-			assert.is_false(migration.notify_if_pending_v1())
-			assert.is_nil(find_notification("v1 bookmark storage detected"))
-		end)
-
-		it("returns false when old_path == new_path", function()
-			-- Force the new storage path to equal what compute_old_path
-			-- would produce for this project. This simulates project_id
-			-- having fallen back to the repo path.
+		it("dual-state ERROR notify is idempotent per session", function()
 			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
+			local new_path = persistence.get_storage_path()
 
-			-- Seed a v1 file at that path so any path-only check would
-			-- still see something on disk.
 			write_json(old_path, {
 				version = 1,
 				bookmarks = {
 					{ file = "/fake/proj/src/main.lua", line = 10, id = "id1" },
 				},
 			})
+			write_json(new_path, {
+				version = 2,
+				bookmarks = {
+					{ file = "src/main.lua", line = 10, id = "v2id" },
+				},
+			})
 
-			local original_get_storage_path = persistence.get_storage_path
-			persistence.get_storage_path = function()
-				return old_path
+			migration.auto_migrate()
+			migration.auto_migrate()
+
+			-- Only ONE ERROR notify in total.
+			local count = 0
+			for _, n in ipairs(notifications) do
+				if type(n.msg) == "string" and n.msg:find("cannot migrate", 1, true) then
+					count = count + 1
+				end
 			end
-
-			local pending = migration.notify_if_pending_v1()
-
-			persistence.get_storage_path = original_get_storage_path
-
-			assert.is_false(pending)
-			assert.is_nil(find_notification("v1 bookmark storage detected"))
+			assert.are.equal(1, count)
 		end)
 
-		it("returns false when not in a git repo", function()
-			-- Seed a hypothetical v1 file so we know the false return is
-			-- driven by the project_root nil check, not by absence of a file.
+		it("_reset_for_testing allows the dual-state ERROR to fire again", function()
+			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
+			local new_path = persistence.get_storage_path()
+
+			write_json(old_path, {
+				version = 1,
+				bookmarks = {
+					{ file = "/fake/proj/src/main.lua", line = 10, id = "id1" },
+				},
+			})
+			write_json(new_path, {
+				version = 2,
+				bookmarks = {
+					{ file = "src/main.lua", line = 10, id = "v2id" },
+				},
+			})
+
+			migration.auto_migrate()
+			notifications = {}
+			migration._reset_for_testing()
+			migration.auto_migrate()
+
+			assert.is_not_nil(find_notification("cannot migrate"))
+		end)
+
+		it("is silent when no v1 file exists at the old path", function()
+			-- Don't seed any old file.
+			migration.auto_migrate()
+
+			assert.are.equal(0, #notifications)
+		end)
+
+		it("is silent when not in a git repo", function()
+			-- Seed a hypothetical v1 file so we know silence is driven by
+			-- the project.root nil check, not by absence of a file.
 			local hypothetical_old = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
 			write_json(hypothetical_old, {
 				version = 1,
@@ -513,10 +523,42 @@ describe("haunt.migration", function()
 				},
 			})
 
-			project_mock.set({ root = nil, branch = nil, project_id = "fallback" })
+			project_mock.set({ root = nil, branch = nil, project_id = "/tmp/cwd" })
 
-			assert.is_false(migration.notify_if_pending_v1())
-			assert.is_nil(find_notification("v1 bookmark storage detected"))
+			migration.auto_migrate()
+
+			assert.are.equal(0, #notifications)
+			-- Old file remains untouched.
+			assert.are.equal(1, vim.fn.filereadable(hypothetical_old))
+			assert.are.equal(0, vim.fn.filereadable(hypothetical_old .. ".v1.bak"))
+		end)
+
+		it("is silent when old_path == new_path", function()
+			local old_path = v1_path_for(fake_project_root, fake_branch, fake_data_dir, true)
+
+			-- Seed a v1 file at the old path.
+			write_json(old_path, {
+				version = 1,
+				bookmarks = {
+					{ file = "/fake/proj/src/main.lua", line = 10, id = "id1" },
+				},
+			})
+
+			-- Force new storage path to equal old path (simulates project_id
+			-- falling back to repo path).
+			local original_get_storage_path = persistence.get_storage_path
+			persistence.get_storage_path = function()
+				return old_path
+			end
+
+			migration.auto_migrate()
+
+			persistence.get_storage_path = original_get_storage_path
+
+			assert.are.equal(0, #notifications)
+			-- v1 file untouched (no migration attempted).
+			assert.are.equal(1, vim.fn.filereadable(old_path))
+			assert.are.equal(0, vim.fn.filereadable(old_path .. ".v1.bak"))
 		end)
 	end)
 end)

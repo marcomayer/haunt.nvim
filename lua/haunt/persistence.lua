@@ -23,7 +23,8 @@
 ---@field set_data_dir fun(dir: string|nil)
 ---@field ensure_data_dir fun(): string|nil, string|nil
 ---@field get_git_info fun(): {root: string|nil, branch: string|nil}
----@field get_storage_path fun(): string|nil, string|nil
+---@field get_storage_path fun(): string
+---@field _get_v1_storage_path fun(repo_root: string, branch: string|nil, per_branch: boolean|nil): string
 ---@field save_bookmarks fun(bookmarks: Bookmark[], filepath?: string): boolean
 ---@field save_bookmarks_async fun(bookmarks: Bookmark[], filepath?: string, callback?: fun(success: boolean))
 ---@field load_bookmarks fun(filepath?: string): Bookmark[]|nil
@@ -35,69 +36,20 @@
 ---@diagnostic disable-next-line: missing-fields
 local M = {}
 
+local STORAGE_VERSION = 2
+local DEFAULT_BRANCH_KEY = "__default__"
+
 ---@private
 ---@type string|nil
 local custom_data_dir = nil
 
--- Git info cache with TTL
----@type {root: string|nil, branch: string|nil}|nil
-local _git_info_cache = nil
----@type number
-local _cache_time = 0
----@type string|nil
-local _cache_cwd = nil
----@type number
-local CACHE_TTL = 5000 -- 5 seconds in milliseconds
-
--- Track if we've already warned about git not being available
----@type boolean
-local _git_warning_shown = false
-
---- Gets the git root directory for the current working directory
----@return string|nil git_root The git repository root path, or nil if not in a git repo
-local function get_git_root()
-	local result = vim.fn.systemlist("git rev-parse --show-toplevel")
-	local exit_code = vim.v.shell_error
-
-	if exit_code == 0 and result[1] then
-		return result[1]
-	end
-
-	-- Exit code 128 typically means "not a git repository" - this is expected
-	-- Exit code 127 means "command not found" - git is not installed
-	if exit_code == 127 and not _git_warning_shown then
-		_git_warning_shown = true
-		vim.notify(
-			"haunt.nvim: git command not found. Bookmarks will be stored per working directory instead of per repository/branch.",
-			vim.log.levels.DEBUG
-		)
-	end
-
-	return nil
-end
-
---- Gets the current git branch name or commit hash for detached HEAD
----@return string|nil branch The current git branch name, short commit hash, or nil if not in a git repo
-local function get_git_branch()
-	local result = vim.fn.systemlist("git branch --show-current")
-	local exit_code = vim.v.shell_error
-
-	if exit_code ~= 0 then
-		return nil
-	end
-
-	local branch = result[1]
-	if branch and branch ~= "" then
-		return branch
-	end
-
-	-- Detached HEAD (e.g., tag checkout): use short commit hash as identifier
-	local hash_result = vim.fn.systemlist("git rev-parse --short HEAD")
-	if vim.v.shell_error == 0 and hash_result[1] and hash_result[1] ~= "" then
-		return hash_result[1]
-	end
-
-	return nil
+--- Get git repository information for the current working directory.
+--- Thin shim over haunt.project for backward compatibility with consumers
+--- (and the test suite) that referenced this on persistence.
+---@return { root: string|nil, branch: string|nil }
+function M.get_git_info()
+	local info = require("haunt.project").get_info()
+	return { root = info.root, branch = info.branch }
 end
 
 --- Set custom data directory
@@ -132,74 +84,52 @@ function M.ensure_data_dir()
 	return data_dir
 end
 
---- Get git repository information for the current working directory
---- Uses caching with 5-second TTL to avoid repeated system calls
---- @return { root: string|nil, branch: string|nil }
---- Returns a table with:
----   - root: absolute path to git repository root, or nil if not in a git repo
----   - branch: name of current branch, or nil if not in a git repo, detached HEAD, or no commits
-function M.get_git_info()
-	local now = vim.uv.hrtime() / 1e6 -- Convert to milliseconds
-	local cwd = vim.fn.getcwd()
-
-	-- Check if cache is valid
-	if _git_info_cache and _cache_cwd == cwd and (now - _cache_time) < CACHE_TTL then
-		return _git_info_cache
-	end
-
-	-- Cache miss or expired - fetch fresh data
-	local result = {
-		root = get_git_root(),
-		branch = get_git_branch(),
-	}
-
-	-- Update cache
-	_git_info_cache = result
-	_cache_time = now
-	_cache_cwd = cwd
-
-	return result
+---@param key string Pre-built keying string to hash into the filename
+---@return string path
+local function path_for_key(key)
+	return get_data_dir() .. vim.fn.sha256(key):sub(1, 12) .. ".json"
 end
 
---- Generates a storage path for the current project and branch
---- Uses a 12-character SHA256 hash of "project_id|branch" for the filename
---- The project_id is a stable identifier (root commit hash, repo path, or cwd)
---- supplied by haunt.project, so forks/clones of the same project produce the
---- same storage file regardless of where they live on disk.
---- For detached HEAD states (e.g., tag checkouts), uses the short commit hash as identifier
---- Falls back to "__default__" branch when not in a git repository
---- When per_branch_bookmarks is false, only uses project_id for the hash (bookmarks shared across branches)
+--- Generates a storage path for the current project and branch.
+--- Uses a 12-character SHA256 hash of "project_id|branch" (or just "project_id"
+--- when per_branch_bookmarks is disabled). project_id is a stable identifier
+--- (root commit hash, repo path, or cwd) supplied by haunt.project, so
+--- forks/clones of the same project produce the same storage file.
 ---@return string path The full path to the storage file
 function M.get_storage_path()
 	local config = require("haunt.config").get()
 	local info = require("haunt.project").get_info()
-	local data_dir = get_data_dir()
 
-	-- Skip branch scoping if per_branch_bookmarks is disabled
-	if not config.per_branch_bookmarks then
-		local hash = vim.fn.sha256(info.project_id):sub(1, 12)
-		return data_dir .. hash .. ".json"
+	local key = info.project_id
+	if config.per_branch_bookmarks then
+		key = key .. "|" .. (info.branch or DEFAULT_BRANCH_KEY)
 	end
 
-	local branch = info.branch or "__default__"
-	local key = info.project_id .. "|" .. branch
-	local hash = vim.fn.sha256(key):sub(1, 12)
+	return path_for_key(key)
+end
 
-	return data_dir .. hash .. ".json"
+--- Compute the legacy v1 storage path for a project keyed by repo path.
+--- Exposed for haunt.migration; not part of the stable public API.
+---@param repo_root string Absolute path to the git repository root
+---@param branch string|nil Current branch (nil falls back to the default-branch key)
+---@param per_branch boolean|nil Whether per-branch bookmarks are enabled (truthy means yes)
+---@return string path
+function M._get_v1_storage_path(repo_root, branch, per_branch)
+	local key = repo_root
+	if per_branch then
+		key = key .. "|" .. (branch or DEFAULT_BRANCH_KEY)
+	end
+	return path_for_key(key)
 end
 
 --- Build a serializable copy of bookmarks for v2 storage.
---- Transforms in-memory bookmarks (absolute paths) into the on-disk form:
----   - File paths are stored relative to the project root when possible.
----   - Bookmarks flagged `absolute=true` keep their absolute path.
----   - Bookmarks whose file lies outside the project root (or when no project
----     root is available) are defensively flagged absolute on save to prevent
----     producing nonsense relative paths.
----   - Runtime-only fields (`extmark_id`, `annotation_extmark_id`) are stripped.
+--- - In-project bookmarks are stored relative to the project root.
+--- - Bookmarks flagged `absolute=true`, or whose file lies outside the project,
+---   are stored as absolute paths with `absolute=true`.
+--- - Runtime-only fields (extmark IDs) are stripped.
 ---@param bookmarks Bookmark[] In-memory bookmarks list
 ---@return table[] serializable Transformed bookmarks ready to be JSON-encoded
 local function build_serializable(bookmarks)
-	-- Lazy require to avoid potential circular dependencies at module-load time.
 	local utils = require("haunt.utils")
 	local project_root = require("haunt.project").get_info().root
 	local result = {}
@@ -212,21 +142,15 @@ local function build_serializable(bookmarks)
 			id = bookmark.id,
 		}
 
-		if bookmark.absolute == true then
-			entry.absolute = true
-		else
-			local relative = nil
-			if project_root then
-				relative = utils.to_relative(bookmark.file, project_root)
-			end
+		local relative = nil
+		if project_root and not bookmark.absolute then
+			relative = utils.to_relative(bookmark.file, project_root)
+		end
 
-			if relative then
-				entry.file = relative
-			else
-				-- Defensive: file is outside the project (or no project root).
-				-- Flag absolute so we don't write a nonsense relative path.
-				entry.absolute = true
-			end
+		if relative then
+			entry.file = relative
+		else
+			entry.absolute = true
 		end
 
 		result[i] = entry
@@ -261,9 +185,8 @@ function M.save_bookmarks(bookmarks, filepath)
 	-- Ensure storage directory exists
 	M.ensure_data_dir()
 
-	-- Create data structure with version 2 (paths relative to project root)
 	local data = {
-		version = 2,
+		version = STORAGE_VERSION,
 		bookmarks = build_serializable(bookmarks),
 	}
 
@@ -316,7 +239,7 @@ function M.save_bookmarks_async(bookmarks, filepath, callback)
 	M.ensure_data_dir()
 
 	local data = {
-		version = 2,
+		version = STORAGE_VERSION,
 		bookmarks = build_serializable(bookmarks),
 	}
 
@@ -353,15 +276,13 @@ end
 
 --- Resolve v2 bookmarks: turn project-relative paths back into absolute paths.
 --- - bookmark.absolute == true: file is already absolute, pass through unchanged.
---- - otherwise: resolve relative to the current project root via project.get_info().
+--- - otherwise: resolve relative to the current project root.
 ---   When no project root is available (not in a git repo), emit a single warning
 ---   and leave bookmark.file as the stored relative string. The bookmark won't
 ---   resolve to a real file but the load will not crash.
 ---@param bookmarks table[] Raw bookmarks read from disk (v2 shape)
 ---@return table[] resolved Bookmarks with absolute file paths in memory
 local function resolve_v2_bookmarks(bookmarks)
-	-- Lazy require to mirror the pattern in build_serializable and to avoid
-	-- potential circular dependencies at module-load time.
 	local utils = require("haunt.utils")
 	local project_root = require("haunt.project").get_info().root
 	local warned_no_root = false
@@ -374,10 +295,7 @@ local function resolve_v2_bookmarks(bookmarks)
 		if not project_root then
 			if not warned_no_root then
 				warned_no_root = true
-				vim.notify(
-					"haunt.nvim: cannot resolve relative paths — not in a git repo",
-					vim.log.levels.WARN
-				)
+				vim.notify("haunt.nvim: cannot resolve relative paths — not in a git repo", vim.log.levels.WARN)
 			end
 			goto continue
 		end
@@ -436,8 +354,6 @@ function M.load_bookmarks(filepath)
 		return {}
 	end
 
-	-- v1: storage predates project-relative paths. Reject with a migration
-	-- prompt and leave the file intact on disk for :HauntMigrate to upgrade.
 	if data.version == 1 then
 		vim.notify(
 			"haunt.nvim: v1 bookmark storage detected at "
@@ -448,23 +364,15 @@ function M.load_bookmarks(filepath)
 		return {}
 	end
 
-	-- v2: project-relative paths. Resolve back to absolute in memory.
-	if data.version == 2 then
+	if data.version == STORAGE_VERSION then
 		if type(data.bookmarks) ~= "table" then
-			vim.notify(
-				"haunt.nvim: load_bookmarks: invalid bookmarks field (not a table)",
-				vim.log.levels.ERROR
-			)
+			vim.notify("haunt.nvim: load_bookmarks: invalid bookmarks field (not a table)", vim.log.levels.ERROR)
 			return {}
 		end
 		return resolve_v2_bookmarks(data.bookmarks)
 	end
 
-	-- Unsupported version
-	vim.notify(
-		"haunt.nvim: load_bookmarks: unsupported version: " .. tostring(data.version),
-		vim.log.levels.ERROR
-	)
+	vim.notify("haunt.nvim: load_bookmarks: unsupported version: " .. tostring(data.version), vim.log.levels.ERROR)
 	return {}
 end
 

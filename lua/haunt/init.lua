@@ -198,11 +198,7 @@ function M._setup_restoration_autocmd()
 		end
 	end
 
-	-- Surface a one-time notify if the current project has a v1 file
-	-- pending migration. The storage filename keying changed, so v1 files
-	-- sit at a path the new code path never looks at — without this the
-	-- user sees "no bookmarks" silently.
-	require("haunt.migration").notify_if_pending_v1()
+	require("haunt.migration").auto_migrate()
 end
 
 -- Check if any bookmarks exist
@@ -297,14 +293,9 @@ end
 function M.setup(opts)
 	config.setup(opts)
 
-	-- Setup custom data directory if provided (deferred until first use)
 	local user_config = config.get()
 	if user_config.data_dir then
-		-- Store for later use, don't load persistence module yet
-		vim.schedule(function()
-			local persistence = require("haunt.persistence")
-			persistence.set_data_dir(user_config.data_dir)
-		end)
+		require("haunt.persistence").set_data_dir(user_config.data_dir)
 	end
 end
 
