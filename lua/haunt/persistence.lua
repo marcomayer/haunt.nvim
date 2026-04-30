@@ -217,8 +217,11 @@ function M.save_bookmarks(bookmarks, filepath, project_root)
 		return false
 	end
 
-	local write_ok = pcall(vim.fn.writefile, { payload.json_str }, payload.storage_path)
-	if not write_ok then
+	-- vim.fn.writefile returns -1 on I/O failure (full disk, perms, missing
+	-- parent dir) rather than throwing, so check both the pcall result and
+	-- the return value.
+	local write_ok, write_ret = pcall(vim.fn.writefile, { payload.json_str }, payload.storage_path)
+	if not write_ok or write_ret == -1 then
 		vim.notify("haunt.nvim: save_bookmarks: failed to write file: " .. payload.storage_path, vim.log.levels.ERROR)
 		return false
 	end

@@ -481,6 +481,41 @@ describe("haunt.persistence", function()
 				assert.are.equal(bookmarks[i].id, loaded[i].id)
 			end
 		end)
+
+		it("returns false and notifies when writefile reports I/O failure", function()
+			local bookmarks = {
+				persistence.create_bookmark("/tmp/file1.lua", 10, "First"),
+			}
+
+			local original_writefile = vim.fn.writefile
+			vim.fn.writefile = function()
+				return -1
+			end
+
+			local original_notify = vim.notify
+			local notify_calls = {}
+			vim.notify = function(msg, level, opts)
+				table.insert(notify_calls, { msg = msg, level = level, opts = opts })
+			end
+
+			local ok, err = pcall(persistence.save_bookmarks, bookmarks, test_file)
+
+			vim.fn.writefile = original_writefile
+			vim.notify = original_notify
+
+			assert.is_true(ok, "save_bookmarks raised: " .. tostring(err))
+			assert.is_false(err)
+
+			local saw_failure = false
+			for _, call in ipairs(notify_calls) do
+				if call.msg and call.msg:find("failed to write", 1, true) then
+					assert.are.equal(vim.log.levels.ERROR, call.level)
+					saw_failure = true
+					break
+				end
+			end
+			assert.is_true(saw_failure, "expected a failure notify when writefile returns -1")
+		end)
 	end)
 
 	describe("v2 storage format", function()
