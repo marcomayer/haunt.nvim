@@ -40,10 +40,6 @@ local utils = require("haunt.utils")
 
 ---@private
 ---@type boolean
-local _autosave_setup = false
-
----@private
----@type boolean
 local _annotations_visible = true
 
 ---@private
@@ -248,12 +244,6 @@ function M.toggle_annotation()
 
 	require("haunt")._ensure_initialized()
 
-	-- Set up autosave autocmds after first bookmark is created
-	if not _autosave_setup then
-		require("haunt").setup_autocmds()
-		_autosave_setup = true
-	end
-
 	local bufnr = vim.api.nvim_get_current_buf()
 
 	local valid, error_msg = utils.validate_buffer_for_bookmarks(bufnr)
@@ -446,12 +436,6 @@ function M.annotate(text)
 
 	-- Ensure display layer is initialized
 	require("haunt")._ensure_initialized()
-
-	-- Set up autosave autocmds after first bookmark is created
-	if not _autosave_setup then
-		require("haunt").setup_autocmds()
-		_autosave_setup = true
-	end
 
 	-- Get current buffer and cursor position
 	local bufnr = vim.api.nvim_get_current_buf()
@@ -918,7 +902,6 @@ function M._reset_for_testing()
 	ensure_modules()
 	---@cast store -nil
 	store._reset_for_testing()
-	_autosave_setup = false
 	_annotations_visible = true
 	_absolute_notified = false
 end

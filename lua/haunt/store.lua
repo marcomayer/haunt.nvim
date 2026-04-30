@@ -330,17 +330,43 @@ function M.reload()
 	M.load()
 end
 
+--- Pull each bookmark's current line from its tracking extmark.
+--- The visual extmark moves with text edits, but `bookmark.line` is set at
+--- creation and never reassigned — without this sync the on-disk line is
+--- pinned forever (issue #72).
+local function sync_lines_from_extmarks()
+	local display = require("haunt.display")
+	for _, bm in ipairs(bookmarks) do
+		if not bm.extmark_id then
+			goto continue
+		end
+
+		local bufnr = vim.fn.bufnr(bm.file)
+		if bufnr == -1 or not vim.api.nvim_buf_is_valid(bufnr) or not vim.api.nvim_buf_is_loaded(bufnr) then
+			goto continue
+		end
+
+		local cur = display.get_extmark_line(bufnr, bm.extmark_id)
+		if cur then
+			bm.line = cur
+		end
+
+		::continue::
+	end
+end
+
 --- Save bookmarks to persistent storage.
 ---
---- Bookmarks are auto-saved on text changes (debounced) and Neovim exit,
---- but you can call this manually to force a save. Always writes to the
---- stamped storage path/root, not the project cache's current values, so
---- a `:cd` into a different project doesn't redirect saves mid-flight.
+--- Pulls each bookmark's current line from its tracking extmark, then writes
+--- to the stamped storage path/root captured at load time (not the project
+--- cache's current values), so a `:cd` into a different project doesn't
+--- redirect saves mid-flight.
 ---
 ---@return boolean success True if save succeeded
 function M.save()
 	ensure_persistence()
 	---@cast persistence -nil
+	sync_lines_from_extmarks()
 	return persistence.save_bookmarks(bookmarks, _loaded_storage_path, _loaded_project_root)
 end
 

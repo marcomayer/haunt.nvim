@@ -779,4 +779,29 @@ describe("haunt.api", function()
 			helpers.cleanup_buffer(bufnr2)
 		end)
 	end)
+
+	describe("autosave registration", function()
+		-- The VimLeavePre save autocmd was previously gated behind "first
+		-- bookmark created in this session" via _autosave_setup. That meant
+		-- a session that only edited text around pre-existing bookmarks
+		-- (loaded from disk) never registered VimLeavePre, so line drift
+		-- captured in extmarks was never flushed back on exit. The fix is
+		-- to register VimLeavePre at plugin entry, regardless of whether
+		-- the user adds a new bookmark.
+		it("registers VimLeavePre on plugin entry, before any bookmarks are added", function()
+			pcall(vim.api.nvim_del_augroup_by_name, "haunt_autosave")
+
+			require("haunt")._setup_restoration_autocmd()
+
+			local ok, autocmds = pcall(vim.api.nvim_get_autocmds, {
+				group = "haunt_autosave",
+				event = "VimLeavePre",
+			})
+			assert.is_true(ok, "haunt_autosave augroup should exist after _setup_restoration_autocmd")
+			assert.is_true(
+				#autocmds > 0,
+				"VimLeavePre must be registered by _setup_restoration_autocmd, not lazily after first bookmark"
+			)
+		end)
+	end)
 end)
