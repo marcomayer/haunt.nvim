@@ -284,47 +284,14 @@ local function has_bookmarks()
 	return api.has_bookmarks()
 end
 
-local function save_all_bookmarks()
-	if not has_bookmarks() then
-		return
-	end
-
-	local api = require("haunt.api")
-	if api.save_async then
-		api.save_async()
-	end
-end
-
--- Debounce timer for saving bookmarks after text changes
-local save_timer = assert(vim.uv.new_timer())
-local SAVE_DEBOUNCE_DELAY = 500 -- milliseconds
-
--- Debounced save function for text change events
-local function debounced_save()
-	-- Stop the timer if it's running (safe to call even if not running)
-	save_timer:stop()
-
-	-- Restart the timer
-	save_timer:start(
-		SAVE_DEBOUNCE_DELAY,
-		0,
-		vim.schedule_wrap(function()
-			save_all_bookmarks()
-		end)
-	)
-end
-
 ---@private
 function M.setup_autocmds()
 	local augroup = vim.api.nvim_create_augroup("haunt_autosave", { clear = true })
 
-	-- Save all bookmarks before Vim exits (synchronous to ensure completion)
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		group = augroup,
 		pattern = "*",
 		callback = function()
-			save_timer:stop()
-
 			if not has_bookmarks() then
 				return
 			end
@@ -333,17 +300,6 @@ function M.setup_autocmds()
 			store.save()
 		end,
 		desc = "Auto-save all bookmarks before Vim exits",
-	})
-
-	-- Save bookmarks after text changes (debounced)
-	-- This handles bookmark line updates when text is edited
-	vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-		group = augroup,
-		pattern = "*",
-		callback = function()
-			debounced_save()
-		end,
-		desc = "Auto-save bookmarks after text changes (handles line updates)",
 	})
 end
 
