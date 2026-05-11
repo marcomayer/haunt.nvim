@@ -58,6 +58,7 @@ haunt-sidekick	haunt.txt	/*haunt-sidekick*
 haunt-troubleshooting	haunt.txt	/*haunt-troubleshooting*
 haunt.nvim	haunt.txt	/*haunt.nvim*
 path_for_key()	haunt.txt	/*path_for_key()*
+recreate_bookmark_visuals()	haunt.txt	/*recreate_bookmark_visuals()*
 relative	haunt.txt	/*relative*
 resolve_v2_bookmarks()	haunt.txt	/*resolve_v2_bookmarks()*
 update_bookmark_annotation()	haunt.txt	/*update_bookmark_annotation()*
