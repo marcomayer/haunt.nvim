@@ -362,7 +362,7 @@ Fields ~
 {yank_locations} `(fun(opts?: SidekickOpts): boolean)`
 {cleanup_buffer_tracking} `(fun(bufnr: number))`
 {change_data_dir} `(fun(new_dir: string|nil): boolean)`
-{reload} `(fun(): boolean)`
+{reload} `(fun(reason?: ReloadReason): boolean)`
 {_reset_for_testing} `(fun())`
 
 ------------------------------------------------------------------------------
@@ -373,6 +373,16 @@ Removes extmarks, signs, and annotations from the buffer
 Parameters ~
 {bufnr} `(number)` Buffer number
 {bookmark} `(Bookmark)` The bookmark whose visuals should be cleaned up
+
+------------------------------------------------------------------------------
+                                                   *recreate_bookmark_visuals()*
+                `recreate_bookmark_visuals`({bufnr}, {bookmark})
+Re-create visual elements for a bookmark whose previous visuals were torn down.
+Used by delete-path rollback when save fails: the bookmark is being put back
+into the store, and the user's screen needs the sign/extmark/annotation back.
+Parameters ~
+{bufnr} `(number)` Buffer number
+{bookmark} `(Bookmark)` The bookmark to re-render. Its extmark/annotation IDs are reassigned.
 
 ------------------------------------------------------------------------------
                                                  *create_and_persist_bookmark()*
@@ -665,7 +675,7 @@ Parameters ~
 
 ------------------------------------------------------------------------------
                                                                     *M.reload()*
-                                  `M.reload`()
+                              `M.reload`({reason})
 Refresh in-memory state from on-disk storage.
 
 Clears extmarks and signs from all loaded buffers, resets restoration
@@ -676,6 +686,8 @@ this does NOT call store.save() first.
 Used after the storage file has been changed externally (data dir
 swap, migration, etc.).
 
+Parameters ~
+{reason} `(optional)` `(ReloadReason)` Why the reload is happening; defaults to "manual" (`:HauntReload`)
 Return ~
 `(boolean)` success Always true once invoked
 
@@ -861,11 +873,23 @@ Return ~
 ------------------------------------------------------------------------------
                                                             *M.load_bookmarks()*
                          `M.load_bookmarks`({filepath})
-Load bookmarks from JSON file
+Load bookmarks from JSON file.
+
+Returns:
+  - An array of bookmarks on a successful load.
+  - `{}` when the storage file does not exist (a fresh user is a
+    successful load with zero bookmarks).
+  - `nil` on any actual load failure: storage path unresolvable,
+    read/parse error, missing/unsupported version, v1 file detected,
+    invalid structure. Each failure path emits its own notify.
+
+Callers (store.load) use the nil return to distinguish "load failed —
+leave the in-memory store untouched and suppress on_load" from
+"loaded, nothing to do."
 Parameters ~
 {filepath} `(optional)` `(string)` Optional custom file path (defaults to git-based path)
 Return ~
-`(table)` bookmarks Array of bookmarks, or empty table if file doesn't exist or on error
+`(Bookmark[]|nil)` bookmarks Array on success/empty, nil on failure
 
 ------------------------------------------------------------------------------
                                                         *generate_bookmark_id()*
@@ -1021,6 +1045,7 @@ haunt.nvim provides the following user commands:
 `:HauntClearAll` - Clear all bookmarks across all files
 `:HauntChangeDataDir [path]` - Change bookmark data directory (for project-specific bookmarks)
 `:HauntMigrate` - Migrate bookmarks from v1 to v2 storage (project-relative paths)
+`:HauntReload` - Reload bookmarks from disk (e.g. after switching branches externally)
 
 ------------------------------------------------------------------------------
 Class ~
