@@ -91,6 +91,7 @@ return {
     annotation_suffix = "",
     line_hl = nil,
     virt_text_pos = "eol",
+    above_wrap_at = 80,
     data_dir = nil,
     per_branch_bookmarks = true,
     picker = "auto", -- "auto", "snacks", "telescope", or "fzf"

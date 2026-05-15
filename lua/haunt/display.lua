@@ -40,6 +40,11 @@ local function define_highlights()
 	if vim.tbl_isempty(existing) then
 		vim.api.nvim_set_hl(0, "HauntAnnotation", { link = "DiagnosticVirtualTextHint" })
 	end
+
+	local existing_border = vim.api.nvim_get_hl(0, { name = "HauntAnnotationBorder" })
+	if vim.tbl_isempty(existing_border) then
+		vim.api.nvim_set_hl(0, "HauntAnnotationBorder", { link = "FloatBorder" })
+	end
 end
 
 local function ensure_highlights_defined()
@@ -114,6 +119,127 @@ function M.is_initialized()
 	return config.is_setup()
 end
 
+--- Word-wrap a string to fit within max_width display columns.
+--- Breaks at word boundaries when possible, hard-breaks otherwise.
+---@param text string The text to wrap
+---@param max_width number Maximum display width per line
+---@return string[] wrapped The wrapped lines
+local function wrap_text(text, max_width)
+	max_width = tonumber(max_width) or 1
+	if max_width < 1 then
+		max_width = 1
+	end
+
+	if vim.fn.strdisplaywidth(text) <= max_width then
+		return { text }
+	end
+
+	local result = {}
+	local remaining = text
+
+	while vim.fn.strdisplaywidth(remaining) > max_width do
+		local cut
+		local hard_cut = 0
+		local char_count = vim.fn.strchars(remaining)
+
+		-- Find the last space that fits within max_width.
+		for i = 1, char_count do
+			local segment = vim.fn.strcharpart(remaining, 0, i)
+			if vim.fn.strdisplaywidth(segment) > max_width then
+				break
+			end
+			hard_cut = i
+			if vim.fn.strcharpart(remaining, i - 1, 1) == " " then
+				cut = i
+			end
+		end
+
+		if not cut then
+			-- No space found, so hard-break at max_width.
+			cut = math.max(hard_cut, 1)
+		end
+
+		table.insert(result, vim.fn.strcharpart(remaining, 0, cut))
+		remaining = vim.fn.strcharpart(remaining, cut)
+	end
+
+	if #remaining > 0 then
+		table.insert(result, remaining)
+	end
+
+	return result
+end
+
+--- Build virtual lines for a boxed annotation displayed above the target line
+---@param note string The annotation text (may contain newlines)
+---@param prefix string Text to display before the first line (e.g. icon)
+---@param hl_group string Highlight group for the content
+---@param border_hl string Highlight group for the box border
+---@param wrap_at number Max content width before wrapping
+---@return table virt_lines Array of virtual line chunks for nvim_buf_set_extmark
+local function build_box_lines(note, prefix, hl_group, border_hl, wrap_at)
+	-- Split on literal "\n" (backslash-n typed into vim.fn.input) and real newlines
+	local lines = vim.split(note:gsub("\\n", "\n"), "\n")
+	local prefix_width = vim.fn.strdisplaywidth(prefix)
+	local indent = string.rep(" ", prefix_width)
+
+	-- 2 border chars (│…│) take display space from wrap_at
+	local max_content_width = math.max((tonumber(wrap_at) or 80) - 2, 1)
+
+	local content = {}
+	local max_width = 0
+
+	for i, line in ipairs(lines) do
+		if i == 1 then
+			local wrapped = wrap_text(prefix .. line, max_content_width)
+			for j, wl in ipairs(wrapped) do
+				if j > 1 then
+					wl = indent .. wl
+				end
+				local w = vim.fn.strdisplaywidth(wl)
+				if w > max_width then
+					max_width = w
+				end
+				table.insert(content, wl)
+			end
+		else
+			local wrapped = wrap_text(indent .. line, max_content_width)
+			for _, wl in ipairs(wrapped) do
+				local w = vim.fn.strdisplaywidth(wl)
+				if w > max_width then
+					max_width = w
+				end
+				table.insert(content, wl)
+			end
+		end
+	end
+
+	local inner_width = max_width + 1
+	local virt_lines = {}
+
+	-- Top border
+	table.insert(virt_lines, {
+		{ "╭" .. string.rep("─", inner_width) .. "╮", border_hl },
+	})
+
+	-- Body rows
+	for _, text in ipairs(content) do
+		local fill = inner_width - vim.fn.strdisplaywidth(text)
+		table.insert(virt_lines, {
+			{ "│", border_hl },
+			{ text .. string.rep(" ", fill), hl_group },
+			{ "│", border_hl },
+		})
+	end
+
+	-- Bottom border
+	table.insert(virt_lines, {
+		{ "╰" .. string.rep("─", inner_width) .. "╯", border_hl },
+	})
+
+	return virt_lines
+end
+
 --- Show annotation as virtual text at the end of a line
 ---@param bufnr number Buffer number
 ---@param line number 1-based line number
@@ -137,13 +263,21 @@ function M.show_annotation(bufnr, line, note)
 	end
 
 	local cfg = config.get()
-	-- some guards
 	local hl_group = cfg.virt_text_hl or "HauntAnnotation"
 	local prefix = cfg.annotation_prefix or "  "
 	local suffix = cfg.annotation_suffix or ""
 	local virt_text_pos = cfg.virt_text_pos or "eol"
 
-	-- nvim_buf_set_extmark uses 0-based line numbers
+	if virt_text_pos == "above" then
+		local wrap_at = cfg.above_wrap_at or 80
+		local box_lines = build_box_lines(note .. suffix, prefix, hl_group, "HauntAnnotationBorder", wrap_at)
+		local extmark_id = vim.api.nvim_buf_set_extmark(bufnr, M.get_namespace(), line - 1, 0, {
+			virt_lines = box_lines,
+			virt_lines_above = true,
+		})
+		return extmark_id
+	end
+
 	local extmark_id = vim.api.nvim_buf_set_extmark(bufnr, M.get_namespace(), line - 1, 0, {
 		virt_text = { { prefix .. note .. suffix, hl_group } },
 		virt_text_pos = virt_text_pos,
