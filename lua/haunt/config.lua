@@ -29,7 +29,8 @@ M.DEFAULT_DATA_DIR = vim.fn.stdpath("data") .. "/haunt/"
 ---@field annotation_prefix? string Text to display before the annotation (default: '  ')
 ---@field annotation_suffix? string Text to display after the annotation (default: '')
 ---@field line_hl? string|nil The highlight group for the entire line (default: nil)
----@field virt_text_pos? string Position of virtual text: "eol" (default), "eol_right_align", "overlay", "right_align", "inline"
+---@field virt_text_pos? string Position of virtual text: "eol" (default), "eol_right_align", "overlay", "right_align", "inline", "above"
+---@field above_max_width? number Maximum width for the "above" box (default: 80). The box is also clamped to the window width. Only applies when virt_text_pos = "above"
 ---@field data_dir? string|nil Custom data directory path (default: vim.fn.stdpath("data") .. "/haunt/")
 ---@field picker? "snacks"|"telescope"|"fzf"|"auto" Which picker to use: "snacks", "telescope", "fzf", or "auto" (default: "auto"). "auto" tries Snacks first, then Telescope, then fzf-lua, then vim.ui.select
 ---@field picker_keys table<string, table> Keybindings for picker actions (default: {delete = {key = 'd', mode = {'n'}}, edit_annotation = {key = 'a', mode = {'n'}}})
@@ -44,6 +45,7 @@ M.DEFAULT = {
 	annotation_suffix = "",
 	line_hl = nil,
 	virt_text_pos = "eol",
+	above_max_width = 80,
 	data_dir = nil,
 	per_branch_bookmarks = true,
 	picker = "auto",
